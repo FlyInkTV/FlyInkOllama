@@ -31,28 +31,41 @@ func (t tensorBase) Shape() []uint64 {
 }
 
 const (
-	tensorKindF32 uint32 = iota
-	tensorKindF16
+	tensorKindFP32 uint32 = iota
+	tensorKindFP16
+	tensorKindBF16  = 30
+	tensorKindMXFP4 = 39
 )
 
 func (t tensorBase) Kind() uint32 {
 	if strings.HasSuffix(t.name, ".ffn_gate_inp.weight") ||
+		strings.HasSuffix(t.name, ".bias") ||
+		strings.HasSuffix(t.name, ".shortconv.conv.weight") ||
+		strings.HasSuffix(t.name, ".ssm_conv1d.weight") || // SSM conv kernel must be F32 for Metal
+		strings.HasPrefix(t.name, "a.feature_extractor.") || // audio feature-extractor constants are read with BackendGet and must be real F32 values
+		strings.HasPrefix(t.name, "a.conv1d.") || // audio SSCP conv weights are kept F32 for im2col; this likely slows audio and should be revisited
+		strings.HasPrefix(t.name, "a.subsampling.") || // audio Parakeet subsampling weights are kept F32 for conv/linear stability; this likely slows audio and should be revisited
+		strings.Contains(t.name, ".conv_dw.") || // audio depthwise conv weights are kept F32; this likely slows audio and should be revisited
 		t.name == "token_types.weight" ||
 		t.name == "v.positional_embedding_vlm" ||
+		t.name == "v.position_embd.weight" ||
 		t.name == "v.tile_position_embd.weight" ||
 		t.name == "v.pre_tile_position_embd.weight" ||
-		t.name == "v.post_tile_position_embd.weight" {
+		t.name == "v.post_tile_position_embd.weight" ||
+		t.name == "s.position_embd" ||
+		strings.HasSuffix(t.name, "rel_pos_h") ||
+		strings.HasSuffix(t.name, "rel_pos_w") {
 		// these tensors are always F32
-		return 0
+		return tensorKindFP32
 	}
 
 	switch len(t.shape) {
 	case 0:
 		panic("invalid tensor shape")
 	case 1:
-		return tensorKindF32
+		return tensorKindFP32
 	default:
-		return tensorKindF16
+		return tensorKindFP16
 	}
 }
 

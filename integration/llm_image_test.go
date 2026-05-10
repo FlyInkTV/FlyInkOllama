@@ -9,60 +9,79 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/api"
-	"github.com/stretchr/testify/require"
 )
 
 func TestVisionModels(t *testing.T) {
 	skipUnderMinVRAM(t, 6)
-	type testCase struct {
-		model string
-	}
-	testCases := []testCase{
-		{
-			model: "qwen2.5vl",
-		},
-		{
-			model: "llama3.2-vision",
-		},
-		{
-			model: "gemma3",
-		},
+
+	defaultVisionModels := []string{
+		"gemma4",
+		"qwen2.5vl",
+		"llama3.2-vision",
+		"gemma3",
+		"qwen3-vl:8b",
+		"qwen3-vl:30b",
+		"ministral-3",
 	}
 
-	for _, v := range testCases {
-		t.Run(v.model, func(t *testing.T) {
+	skipIfNoVisionOverride(t)
+
+	for _, model := range testModels(defaultVisionModels) {
+		t.Run(model, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			client, _, cleanup := InitServerConnection(ctx, t)
+			defer cleanup()
+
+			requireCapability(ctx, t, client, model, "vision")
+			pullOrSkip(ctx, t, client, model)
+
 			image, err := base64.StdEncoding.DecodeString(imageEncoding)
-			require.NoError(t, err)
-			req := api.GenerateRequest{
-				Model:  v.model,
-				Prompt: "what does the text in this image say?",
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := api.ChatRequest{
+				Model: model,
+				Messages: []api.Message{
+					{
+						Role:    "user",
+						Content: "what does the text in this image say?",
+						Images: []api.ImageData{
+							image,
+						},
+					},
+				},
 				Stream: &stream,
 				Options: map[string]any{
 					"seed":        42,
 					"temperature": 0.0,
 				},
-				Images: []api.ImageData{
-					image,
-				},
+				KeepAlive: &api.Duration{Duration: 10 * time.Second},
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-			client, _, cleanup := InitServerConnection(ctx, t)
+
+			// Preload to skip if we're less than 80% on GPU to avoid extremely slow tests
+			err = client.Generate(ctx, &api.GenerateRequest{Model: req.Model}, func(response api.GenerateResponse) error { return nil })
+			if err != nil {
+				t.Fatalf("failed to load model %s: %s", req.Model, err)
+			}
+			skipIfNotGPULoaded(ctx, t, client, req.Model, 80)
 
 			// Note: sometimes it returns "the ollamas" sometimes "the ollams"
-			resp := "the ollam"
-			defer cleanup()
-			require.NoError(t, PullIfMissing(ctx, client, req.Model))
 			// llava models on CPU can be quite slow to start
-			DoGenerate(ctx, t, client, req, []string{resp}, 240*time.Second, 30*time.Second)
+			DoChat(ctx, t, client, req, []string{"the ollam"}, 240*time.Second, 30*time.Second)
 		})
 	}
 }
 
 func TestIntegrationSplitBatch(t *testing.T) {
+	if testModel != "" {
+		t.Skip("uses hardcoded model, not applicable with model override")
+	}
 	skipUnderMinVRAM(t, 6)
 	image, err := base64.StdEncoding.DecodeString(imageEncoding)
-	require.NoError(t, err)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := api.GenerateRequest{
 		Model: "gemma3:4b",
 		// Fill up a chunk of the batch so the image will partially spill over into the next one
@@ -84,7 +103,7 @@ func TestIntegrationSplitBatch(t *testing.T) {
 	defer cancel()
 	client, _, cleanup := InitServerConnection(ctx, t)
 	defer cleanup()
-	require.NoError(t, PullIfMissing(ctx, client, req.Model))
+	pullOrSkip(ctx, t, client, req.Model)
 	// llava models on CPU can be quite slow to start,
 	DoGenerate(ctx, t, client, req, []string{resp}, 120*time.Second, 30*time.Second)
 }
